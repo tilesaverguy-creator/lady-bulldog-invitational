@@ -1,0 +1,25 @@
+
+name: Deploy Lady Bulldog Invitational
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out website files
+        uses: actions/checkout@v4
+
+      - name: Deploy website to Firebase Hosting
+        uses: w9jds/firebase-action@v14.17.0
+        with:
+          args: deploy --only hosting --project lady-bulldog-invitational
+        env:
+          GCP_SA_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
