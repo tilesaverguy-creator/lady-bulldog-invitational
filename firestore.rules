@@ -1,0 +1,31 @@
+rules_version = '2';
+service cloud.firestore {
+ match /databases/{database}/documents {
+  match /tournaments/lady-bulldog {
+   allow read: if true;
+   allow write: if request.auth != null && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+  }
+  // Public users may CREATE a score suggestion only; they cannot read other reports,
+  // edit reports, or change the tournament. Signed-in admins can review them.
+  match /scoreReports/{reportId} {
+   function isAdmin() {return request.auth != null && exists(/databases/$(database)/documents/admins/$(request.auth.uid));}
+   allow read, update, delete: if isAdmin();
+   allow create: if request.resource.data.keys().hasOnly(['gameKey','gameNumber','teamA','teamB','scoreA','scoreB','reporter','status','createdAt'])
+     && request.resource.data.keys().hasAll(['gameKey','gameNumber','teamA','teamB','scoreA','scoreB','reporter','status','createdAt'])
+     && request.resource.data.gameKey is string && request.resource.data.gameKey.size() <= 12
+     && request.resource.data.gameNumber is int && request.resource.data.gameNumber >= 1 && request.resource.data.gameNumber <= 40
+     && request.resource.data.teamA is string && request.resource.data.teamA.size() <= 80
+     && request.resource.data.teamB is string && request.resource.data.teamB.size() <= 80
+     && request.resource.data.scoreA is int && request.resource.data.scoreA >= 0 && request.resource.data.scoreA <= 999
+     && request.resource.data.scoreB is int && request.resource.data.scoreB >= 0 && request.resource.data.scoreB <= 999
+     && request.resource.data.scoreA != request.resource.data.scoreB
+     && request.resource.data.reporter is string && request.resource.data.reporter.size() <= 60
+     && request.resource.data.status == 'pending'
+     && request.resource.data.createdAt == request.time;
+  }
+  match /admins/{uid} {allow read, write: if false;}
+  match /subscriptions/{id} {allow read, write: if false;}
+  match /pendingSubscriptions/{id} {allow read, write: if false;}
+  match /notificationEvents/{id} {allow read, write: if false;}
+ }
+}
