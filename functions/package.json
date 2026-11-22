@@ -1,0 +1,1 @@
+{"name":"lady-bulldog-functions","private":true,"engines":{"node":"20"},"main":"index.js","dependencies":{"firebase-admin":"^12.7.0","firebase-functions":"^6.2.0","twilio":"^5.4.0"}}
