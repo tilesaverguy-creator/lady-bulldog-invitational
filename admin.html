@@ -1,0 +1,279 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lady Bulldog Invitational — Version 11 — Four-Game Consolation Cap</title><style>body{margin:0;background:#101815;color:#f5f8f5;font:15px Arial,sans-serif}header{background:#087b3b;padding:22px}h1{margin:0;font-size:25px}main{max-width:1150px;margin:auto;padding:18px}nav{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px}button{cursor:pointer;border:1px solid #5e8c71;border-radius:7px;background:#213b2b;color:white;padding:10px 14px;font-weight:bold}button:hover{background:#196c40}button.active,.primary{background:#0b9549}button:disabled{opacity:.4;cursor:not-allowed}.panel{background:#1b2920;border:1px solid #42614c;border-radius:12px;padding:16px;margin:12px 0}.hidden{display:none}.game{background:#26382b;border:1px solid #4d7157;border-radius:8px;padding:10px;margin:8px 0;min-width:185px}.meta{font-size:12px;color:#b6d4bd;margin-bottom:7px}.side{display:flex;justify-content:space-between;padding:5px 2px}.win{color:#7ff4a4;font-weight:bold}.rounds{display:flex;gap:12px;overflow:auto}.round{min-width:200px;flex:1}.extras{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px}.extras .game{margin:0}table{border-collapse:collapse;min-width:850px;width:100%}td,th{border:1px solid #45634d;padding:12px;vertical-align:top}th{background:#245338}.scroll{overflow:auto}input,select{background:#fff;color:#111;padding:9px;border-radius:5px;border:0;max-width:120px}.score{display:flex;align-items:center;flex-wrap:wrap;gap:10px;border-bottom:1px solid #42614c;padding:12px 0}.score input{width:65px}.note{padding:12px;background:#483b18;border-radius:7px;margin:12px 0;color:#ffe4a2}.ok{color:#88ffb3}.teamrow{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #405746;padding:7px;gap:12px}.muted{color:#b8c6bb}small{font-size:12px}.side.confirmed{background:#164e32;border-left:4px solid #5df0a0;border-radius:5px;padding:7px 8px;margin:3px 0;color:#baffd2;font-weight:700}.side.confirmed.win{background:#12663a;color:#fff}.schedule-confirmed{color:#72f0a5;font-weight:700}.schedule-placeholder{color:#f5f8f5}</style></head><body><header><h1>🏈 LADY BULLDOG INVITATIONAL</h1><div>Flag Football · <span id="teamCount">20</span> active teams · 5 fields · Friday & Saturday · 40 field slots</div></header><main><section class="panel"><strong>Live publishing</strong> · <span id="cloudStatus">Loading configuration…</span><form id="cloudLoginForm" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><input id="adminEmail" type="email" placeholder="Admin email" autocomplete="username" style="max-width:220px" required><input id="adminPassword" type="password" placeholder="Password" autocomplete="current-password" style="max-width:220px" required><button id="cloudLogin" type="submit">Sign in</button><button id="cloudLogout" type="button" hidden>Sign out</button></form><p class="muted"><small>Only signed-in approved administrators can publish. Public coaches have read-only access.</small></p></section><nav id="nav"><button data-tab="bracket" class="active">Bracket</button><button data-tab="schedule">Field Schedule</button><button data-tab="scores">Enter Scores</button><button type="button" id="pendingScoresTab">Field Reports <span id="pendingCount"></span></button><button data-tab="teams">Teams & Draw</button><button data-tab="paths">Team Paths</button><button data-tab="checks">Checks</button></nav><div id="status" class="note">MaxPreps-seeded championship draw. Consolation teams stop after four total games. Fifth games are championship-only. Three-game guarantee requires scenario testing.</div><div id="view"></div><section id="pendingScoresPanel" class="panel hidden" style="margin-top:14px"><h2>Field score reports — pending approval</h2><p>Anyone can submit a score, but <strong>only you can finalize games</strong>. Review a report, load its score into the Scores tab, and click Finalize there. Reports never automatically change the bracket.</p><div id="pendingScoresList">Sign in to view reports.</div></section></main><script type="module">
+import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
+import {getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
+import {getFirestore, doc, onSnapshot, setDoc, serverTimestamp, collection, query, where, updateDoc} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+import {firebaseConfig} from './firebase-config.js';
+const configured=!!firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('REPLACE');
+if(configured){
+ const app=initializeApp(firebaseConfig),auth=getAuth(app),db=getFirestore(app),ref=doc(db,'tournaments','lady-bulldog');
+ let remoteRevision=null, ready=false, busy=false, timer;let reportsUnsub=null;let reports=[];
+ const escReport=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ const reportsPanel=document.getElementById('pendingScoresPanel');const reportsList=document.getElementById('pendingScoresList');
+ function renderReports(){document.getElementById('pendingCount').textContent=reports.length?'('+reports.length+')':'';
+  reportsList.innerHTML=reports.length?reports.map(r=>`<div class="score" data-report-id="${escReport(r.id)}"><div style="flex:1;min-width:240px"><b>Game ${r.gameNumber}</b> · ${escReport(r.teamA)} <strong>${r.scoreA}</strong> – <strong>${r.scoreB}</strong> ${escReport(r.teamB)}<br><small>Reported by: ${escReport(r.reporter||'Anonymous')} · ${r.createdAt?.toDate?.().toLocaleString?.()||'Just now'}</small></div><button type="button" data-report-load="${escReport(r.id)}">Review in Scores</button><button type="button" data-report-dismiss="${escReport(r.id)}">Dismiss</button></div>`).join(''):'<p class="muted">No pending field reports.</p>';
+ }
+ document.getElementById('pendingScoresTab').addEventListener('click',()=>{reportsPanel.classList.toggle('hidden');if(!reportsPanel.classList.contains('hidden'))reportsPanel.scrollIntoView({behavior:'smooth',block:'start'})});
+ reportsList.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b)return;const id=b.dataset.reportLoad||b.dataset.reportDismiss;const report=reports.find(r=>r.id===id);if(!report)return;
+  if(b.dataset.reportDismiss){if(!confirm('Dismiss this score report without changing the bracket?'))return;try{await updateDoc(doc(db,'scoreReports',id),{status:'dismissed',reviewedAt:serverTimestamp(),reviewedBy:auth.currentUser.uid})}catch(err){alert(err.message)}return}
+  if(!window.lbLoadReportedScore)return alert('Score editor is not ready. Refresh the page.');
+  const outcome=window.lbLoadReportedScore(report);if(!outcome.ok)return alert(outcome.message);
+  reportsPanel.classList.add('hidden');alert('Reported score loaded into the Scores page. Check the teams and scores, then click Finalize. The report remains pending until you finalize or dismiss it.');
+ });
+ window.lbReportFinalized=async(gameKey,sa,sb)=>{const matching=reports.filter(r=>r.gameKey===gameKey&&Number(r.scoreA)===Number(sa)&&Number(r.scoreB)===Number(sb));for(const r of matching){try{await updateDoc(doc(db,'scoreReports',r.id),{status:'approved',reviewedAt:serverTimestamp(),reviewedBy:auth.currentUser.uid})}catch(err){console.error('Unable to mark report reviewed',err)}}};
+ const status=document.getElementById('cloudStatus');
+ const setStatus=s=>{status.textContent=s};
+ window.lbCloud={
+  login:async(email,password)=>{await signInWithEmailAndPassword(auth,email,password)},
+  logout:()=>signOut(auth),
+  save:(state)=>{if(!auth.currentUser||!ready)return;clearTimeout(timer);timer=setTimeout(async()=>{
+    if(busy)return;busy=true;
+    try{await setDoc(ref,{state,updatedAt:serverTimestamp(),updatedBy:auth.currentUser.uid},{merge:true});setStatus('Cloud saved · public bracket updating')}
+    catch(e){setStatus('Cloud save failed: '+e.message)}finally{busy=false}
+  },400)}
+ };
+ onAuthStateChanged(auth,user=>{
+  document.getElementById('cloudLoginForm').querySelector('#adminEmail').hidden=!!user;document.getElementById('cloudLoginForm').querySelector('#adminPassword').hidden=!!user;document.getElementById('cloudLogin').hidden=!!user;
+  document.getElementById('cloudLogout').hidden=!user;
+  setStatus(user?'Signed in · connecting live data':'Offline editing only · sign in to publish');
+  if(!user){ready=false;if(reportsUnsub){reportsUnsub();reportsUnsub=null}reports=[];renderReports();reportsPanel.classList.add('hidden');return}
+  if(reportsUnsub)reportsUnsub();reportsUnsub=onSnapshot(query(collection(db,'scoreReports'),where('status','==','pending')),snap=>{reports=snap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(a.createdAt?.seconds||0)-(b.createdAt?.seconds||0));renderReports()},err=>{reportsList.textContent='Cannot load reports: '+err.message});
+  onSnapshot(ref,snap=>{
+    if(!snap.exists()){ready=true;setStatus('No published bracket yet · your next edit will publish');return}
+    const data=snap.data(),stamp=data.updatedAt?.toMillis?.()||0;
+    if(stamp<=remoteRevision)return;
+    remoteRevision=stamp;
+    if(data.state&&typeof window.lbLoadCloud==='function')window.lbLoadCloud(data.state);
+    ready=true;setStatus('Live bracket connected');
+  },e=>setStatus('Live connection error: '+e.message));
+ });
+ document.getElementById('cloudLoginForm').addEventListener('submit',async e=>{e.preventDefault();try{await window.lbCloud.login(document.getElementById('adminEmail').value,document.getElementById('adminPassword').value)}catch(err){alert(err.message)}});
+ document.getElementById('cloudLogout').onclick=()=>window.lbCloud.logout();
+}else document.getElementById('cloudStatus').textContent='Setup required: configure Firebase before publishing live updates';
+</script><script>
+(function(){'use strict';
+const roster=['Arbor View','Bishop Gorman','Canyon Springs','Centennial','Cimarron-Memorial','Desert Oasis','Faith Lutheran','Foothill','Green Valley','Legacy','Liberty','Mojave','Palo Verde','Pinecrest Cadence','SECTA','Sierra Vista','Silverado','SLAM! NV','Sloan Canyon','Virgin Valley'];
+const maxprepsSeeds=["Sierra Vista", "Desert Oasis", "Arbor View", "Liberty", "Bishop Gorman", "Palo Verde", "SLAM! NV", "Virgin Valley", "SECTA", "Pinecrest Cadence", "Green Valley", "Centennial", "Legacy", "Mojave", "Canyon Springs", "Cimarron-Memorial", "Sloan Canyon", "Faith Lutheran", "Foothill", "Silverado"];
+const stateRanks=[2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 20, 21, 22, 23, 24, 26, 37];
+const priorRecords=["19-3", "20-3", "23-3", "13-6", "15-7", "15-9", "18-6", "15-5", "15-12", "15-7", "17-11", "11-9", "11-9", "9-10", "12-7", "9-8", "9-9", "8-7", "3-12", "3-16"];
+const times=[['Friday','2 PM'],['Friday','4 PM'],['Friday','6 PM'],['Saturday','9 AM'],['Saturday','11 AM'],['Saturday','1 PM'],['Saturday','3 PM'],['Saturday','5 PM']];
+const T=id=>id?({type:'team',id}):null,W=id=>({type:'winner',id}),L=id=>({type:'loser',id});
+const G=(key,round,a,b,slot,field)=>({key,round,a,b,slot,field,sa:'',sb:'',final:false});
+let state={draw:[...maxprepsSeeds],games:[]},tab='bracket',storageOK=true;
+try{const saved=JSON.parse(localStorage.getItem('ladyBulldogV11'));if(saved&&Array.isArray(saved.draw)&&saved.draw.length>=2&&saved.draw.length<=20&&Array.isArray(saved.games))state=saved}catch(e){storageOK=false}
+function save(){try{localStorage.setItem('ladyBulldogV11',JSON.stringify(state))}catch(e){storageOK=false}if(window.lbCloud)window.lbCloud.save(state)}
+window.lbLoadCloud=function(next){if(!next||!Array.isArray(next.games)||!Array.isArray(next.draw)||next.draw.length<2||next.draw.length>20)return;state=next;try{localStorage.setItem('ladyBulldogV11',JSON.stringify(state))}catch(e){}render()};
+function build(){const d=state.seedSlots||state.draw,g=[];
+// Standard 20-team seeded bracket: seeds 13–20 play in, top 12 receive byes.
+// Initial positions can be edited manually without altering the bracket topology.
+for(const [i,j,k] of [[15,16,1],[12,19,2],[14,17,3],[13,18,4]])g.push(G('P'+k,'Play-in',T(d[i]),T(d[j]),0,k));
+const pairs=[
+ [T(d[0]),W('P1')], [T(d[7]),T(d[8])],
+ [T(d[3]),W('P2')], [T(d[4]),T(d[11])],
+ [T(d[1]),W('P3')], [T(d[6]),T(d[9])],
+ [T(d[2]),W('P4')], [T(d[5]),T(d[10])]
+];
+const spots=[[2,1],[1,1],[2,2],[1,2],[2,3],[1,3],[2,4],[1,4]];
+pairs.forEach((p,i)=>g.push(G('A'+(i+1),'Round of 16',p[0],p[1],...spots[i])));
+for(let i=0;i<4;i++)g.push(G('Q'+(i+1),'Quarterfinal',W('A'+(i*2+1)),W('A'+(i*2+2)),3,i+1));
+g.push(G('SF1','Semifinal',W('Q1'),W('Q2'),5,1),G('SF2','Semifinal',W('Q3'),W('Q4'),5,2),G('FINAL','Championship',W('SF1'),W('SF2'),7,1));
+// Additional games: explicit winner/loser pathways, with conditional later pairings.
+// All slots are numbered by time and field, not by their place in the bracket.
+// Games 20, 21-25, 28-30, 31-35 and 37-40 form the lower bracket.
+// Each named matchup is a planned possibility; actual feasibility is checked as results arrive.
+const extraSlots=[[1,5],[2,5],[3,5],[4,1],[4,2],[4,3],[4,4],[4,5],[5,3],[5,4],[5,5],[6,1],[6,2],[6,3],[6,4],[6,5],[7,2],[7,3],[7,4],[7,5]];
+extraSlots.forEach(([slot,field],i)=>g.push(G('C'+(i+1),'Additional',null,null,slot,field)));
+// Collapse empty championship branches without counting a bye as a played game.
+const aliases=new Map();const active=[];
+const deref=s=>s&&s.type==='winner'&&aliases.has(s.id)?aliases.get(s.id):s;
+for(const game of g){if(game.round==='Additional'){active.push(game);continue}game.a=deref(game.a);game.b=deref(game.b);if(!game.a||!game.b){aliases.set(game.key,game.a||game.b||null);continue}active.push(game)}
+state.games=active;save()}
+function withdrawTeam(team){if(!state.draw.includes(team))return;if(state.draw.length<=2)return alert('At least two teams must remain.');if(state.games.some(g=>g.final||g.sa!==''||g.sb!==''))return alert('Clear test scores and consolation pairings in Checks before withdrawing a team. Do not use this after real games begin.');if(!confirm('Withdraw '+team+'? Remaining seed positions and game numbers stay fixed. This rebuilds the unplayed bracket and clears consolation assignments.'))return;state.seedSlots=(state.seedSlots||state.draw).map(t=>t===team?null:t);state.draw=state.seedSlots.filter(Boolean);build();render();showToast(team+' withdrawn. Check the public bracket after cloud save.');}
+
+// Preserve an existing edited V5 draw and completed results; convert an untouched original draw to ranked seeds.
+if(state.draw.join('|')===roster.join('|')&&!state.games.some(g=>g.final)){state.draw=[...maxprepsSeeds];build()}
+else if(!state.games.length||(!state.seedSlots&&state.games.length<35))build();
+const $=id=>document.getElementById(id),num=g=>g.slot*5+g.field,find=id=>state.games.find(g=>g.key===id),esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function resolve(s,depth=0){if(!s||depth>12)return null;if(s.type==='team')return s.id;const g=find(s.id);if(!g||!g.final)return null;const a=resolve(g.a,depth+1),b=resolve(g.b,depth+1);if(!a||!b)return null;return s.type==='winner'?(+g.sa>+g.sb?a:b):(+g.sa>+g.sb?b:a)}
+function label(s){if(!s)return 'Available';const source=s.type==='team'?null:find(s.id);return resolve(s)||(s.type==='team'?s.id:(s.type==='winner'?'Winner':'Loser')+' Game '+(source?num(source):'?'))}
+// Consolation scheduling: pair eliminated teams only; no consolation game may be a team's fifth.
+function completedFor(team){return state.games.filter(g=>g.final&&(resolve(g.a)===team||resolve(g.b)===team))}
+function assignedFor(team){return state.games.filter(g=>(resolve(g.a)===team||resolve(g.b)===team))}
+function eliminated(team){return state.games.some(g=>g.round!=='Additional'&&g.final&&
+ (resolve(g.a)===team||resolve(g.b)===team)&&
+ ((+g.sa>+g.sb?resolve(g.b):resolve(g.a))===team))}
+function opponentPlayed(a,b){return state.games.some(g=>g.final&&
+ ((resolve(g.a)===a&&resolve(g.b)===b)||(resolve(g.a)===b&&resolve(g.b)===a)))}
+function slotIndex(g){return g.slot}
+function eligible(team,slot){if(!eliminated(team))return false;
+ const games=assignedFor(team);if(games.length>=4)return false;
+ if(games.some(g=>!g.final))return false;
+ const last=Math.max(-1,...games.map(g=>g.slot));return last<slot;
+}
+function pairScore(a,b,slot){const ga=assignedFor(a),gb=assignedFor(b);
+ const la=Math.max(-1,...ga.map(g=>g.slot)),lb=Math.max(-1,...gb.map(g=>g.slot));
+ const gapA=slot-la,gapB=slot-lb;
+ // Most important: help teams below 3 games. Prefer one idle time slot, then back-to-back.
+ return (4-Math.min(4,ga.length))*110+(4-Math.min(4,gb.length))*110+
+ (ga.length<3?180:0)+(gb.length<3?180:0)
+ -Math.abs(gapA-2)*24-Math.abs(gapB-2)*24
+ -(gapA===1?50:0)-(gapB===1?50:0)
+ -(ga.length!==gb.length?15:0);
+}
+function assignConsolation(){let added=0;
+ const slots=state.games.filter(g=>g.round==='Additional'&&!g.a&&!g.b).sort((a,b)=>num(a)-num(b));
+ for(const g of slots){
+   // A field slot can be assigned only after its potential opponents have finished prior games.
+   const candidates=state.draw.filter(t=>eligible(t,g.slot));
+   let best=null;
+   for(let i=0;i<candidates.length;i++)for(let j=i+1;j<candidates.length;j++){
+     const a=candidates[i],b=candidates[j];
+     if(opponentPlayed(a,b))continue;
+     const score=pairScore(a,b,g.slot);
+     if(!best||score>best.score)best={a,b,score};
+   }
+   if(best){g.a=T(best.a);g.b=T(best.b);added++}
+ }
+ if(added)save();return added;
+}
+function clearScoresAndConsolation(){for(const g of state.games){g.sa='';g.sb='';g.final=false;
+ if(g.round==='Additional'){g.a=null;g.b=null}}save()}
+function teamReport(){return state.draw.map(t=>({team:t,completed:completedFor(t).length,assigned:assignedFor(t).length,eliminated:eliminated(t)}))}
+function gameHTML(g){const a=resolve(g.a),b=resolve(g.b),w=g.final?(+g.sa>+g.sb?a:b):null;return `<div class="game"><div class="meta"><b>Game ${num(g)}</b> · ${times[g.slot].join(' ')} · Field ${g.field} ${g.final?'· FINAL':''}</div><div class="side ${a?'confirmed':''} ${w===a&&w?'win':''}"><span>${esc(label(g.a))}</span><b>${g.final?esc(g.sa):''}</b></div><div class="side ${b?'confirmed':''} ${w===b&&w?'win':''}"><span>${esc(label(g.b))} (Home)</span><b>${g.final?esc(g.sb):''}</b></div></div>`}
+function bracket(){return `<section class="panel"><h2>Championship bracket</h2><p><button class="primary" data-action="print-poster">⬇ Print Bracket Poster — 90 × 30 in PDF</button></p><p class="muted">Downloads the clean 90 × 30-inch poster. Consolation games appear once their teams have been assigned.</p><div class="rounds">${['Play-in','Round of 16','Quarterfinal','Semifinal','Championship'].map(r=>`<div class="round"><h3>${r}</h3>${state.games.filter(g=>g.round===r).map(gameHTML).join('')}</div>`).join('')}</div></section><section class="panel"><h2>Additional games beneath the bracket</h2><p class="muted">Consolation matchups are assigned from eliminated teams after results are finalized. A team cannot be assigned a fifth game here. Unassigned field slots remain open.</p><div class="extras">${state.games.filter(g=>g.round==='Additional'&&g.a).map(gameHTML).join('')||'<p class="muted">Consolation games will populate as results are finalized. Empty slots remain available.</p>'}</div></section>`}
+function schedule(){return `<section class="panel"><h2>Field schedule — games and available slots</h2><p class="muted">Available means no game is assigned to that field and time. Game numbers are tied to slots for score and advancement integrity.</p><div class="scroll"><table><thead><tr><th>Time</th>${[1,2,3,4,5].map(f=>`<th>Field ${f}</th>`).join('')}</tr></thead><tbody>${times.map((t,s)=>`<tr><th>${t.join(' ')}</th>${[1,2,3,4,5].map(f=>{const g=state.games.find(x=>x.slot===s&&x.field===f);return `<td><b>Game ${s*5+f}</b><br>${g&&g.a?`${esc(g.round)}<br><span class="${resolve(g.a)?'schedule-confirmed':'schedule-placeholder'}">${esc(label(g.a))}</span><br>vs <span class="${resolve(g.b)?'schedule-confirmed':'schedule-placeholder'}">${esc(label(g.b))}</span>`:'Available'}</td>`}).join('')}</tr>`).join('')}</tbody></table></div></section>`}
+window.lbLoadReportedScore=function(report){const g=find(report.gameKey);if(!g||g.final)return {ok:false,message:'Game is already finalized or no longer exists.'};const a=resolve(g.a),b=resolve(g.b);if(!a||!b||a!==report.teamA||b!==report.teamB)return {ok:false,message:'The matchup has changed since the report. Review it manually.'};if(!Number.isInteger(report.scoreA)||!Number.isInteger(report.scoreB)||report.scoreA<0||report.scoreB<0||report.scoreA===report.scoreB)return {ok:false,message:'Invalid reported scores.'};g.sa=String(report.scoreA);g.sb=String(report.scoreB);save();tab='scores';render();const row=document.querySelector(`[data-finalize="${g.key}"]`);row?.scrollIntoView({behavior:'smooth',block:'center'});return {ok:true}};
+function scores(){return `<section class="panel"><h2>Enter Scores</h2><p>Finalizing a game updates its winner and loser pathways. You will remain on this page. Consolation games are assigned as eliminated teams become eligible; no team can be scheduled for a fifth consolation game.</p>${[...state.games].filter(g=>g.round!=='Additional'||g.a).sort((a,b)=>num(a)-num(b)).map(g=>`<div class="score"><div style="min-width:280px"><b>Game ${num(g)}</b> · ${times[g.slot].join(' ')} · Field ${g.field}<br><small>${esc(label(g.a))} vs. ${esc(label(g.b))}</small></div><label>Visitor <input data-score="${g.key}" data-side="sa" type="number" min="0" value="${esc(g.sa)}" ${g.final?'disabled':''}></label><label>Home <input data-score="${g.key}" data-side="sb" type="number" min="0" value="${esc(g.sb)}" ${g.final?'disabled':''}></label><button data-finalize="${g.key}" ${!resolve(g.a)||!resolve(g.b)||g.final?'disabled':''}>Finalize</button>${g.final?`<button data-unlock="${g.key}">Unlock</button>`:''}</div>`).join('')}</section>`}
+function teams(){return `<section class="panel"><h2>MaxPreps preliminary seeding</h2><p class="muted">Based on the previous-season rankings supplied by the tournament organizer. Withdraw teams before real games begin. Remaining seed positions stay fixed; empty matchups become byes.</p><button class="primary" data-action="seeded">Reset to MaxPreps Seeds</button> <button data-action="shuffle">Randomize teams</button> <button data-action="reset">Alphabetical draw</button><p class="muted">Seed adjustments are disabled after a withdrawal to preserve the remaining matchups. Clear test scores before withdrawing a team.</p><div class="scroll"><table style="min-width:620px"><thead><tr><th>Seed / position</th><th>Team</th><th>Previous state rank</th><th>Previous record</th><th>Adjust</th></tr></thead><tbody>${state.draw.map((t,i)=>{const idx=maxprepsSeeds.indexOf(t);return `<tr><td><b>#${(state.seedSlots||state.draw).indexOf(t)+1}</b>${(state.seedSlots||state.draw).indexOf(t)<12?' · Bye':' · Play-in'}</td><td>${esc(t)}</td><td>${idx>=0?'#'+stateRanks[idx]:'—'}</td><td>${idx>=0?priorRecords[idx]:'—'}</td><td><button data-move="${i}" data-dir="-1" ${i===0||state.seedSlots?'disabled':''} aria-label="Move ${esc(t)} up">↑</button> <button data-move="${i}" data-dir="1" ${i===state.draw.length-1||state.seedSlots?'disabled':''} aria-label="Move ${esc(t)} down">↓</button> <button data-withdraw="${esc(t)}">Withdraw Team</button></td></tr>`}).join('')}</tbody></table></div></section>`}
+function paths(){return `<section class="panel"><h2>Team paths</h2><label>Choose team: <select id="teamChoice">${state.draw.map(t=>`<option>${esc(t)}</option>`).join('')}</select></label><div id="pathDetails"></div></section>`}
+function pathDetails(){const sel=$('teamChoice');if(!sel)return;const t=sel.value;const g=state.games.find(g=>[g.a,g.b].some(s=>s&&s.type==='team'&&s.id===t));$('pathDetails').innerHTML=g?`${gameHTML(g)}<p>Win → ${state.games.filter(x=>[x.a,x.b].some(s=>s&&s.type==='winner'&&s.id===g.key)).map(x=>'Game '+num(x)).join(', ')||'TBD'}</p><p>Lose → ${state.games.filter(x=>[x.a,x.b].some(s=>s&&s.type==='loser'&&s.id===g.key)).map(x=>'Game '+num(x)).join(', ')||'Not assigned yet'}</p>`:'No opening game found'}
+function checks(){
+ const report=teamReport(),over=report.filter(t=>t.assigned>4&&t.eliminated&&!state.games.some(g=>g.key==='FINAL'&&(resolve(g.a)===t.team||resolve(g.b)===t.team))),under=report.filter(t=>t.completed<3);
+ const filled=state.games.filter(g=>g.round==='Additional'&&g.a).length;
+ const rows=report.map(t=>`<tr><td>${esc(t.team)}</td><td>${t.completed}</td><td>${t.assigned}</td><td>${t.eliminated?'Consolation eligible until 4 games':'Championship active'}</td></tr>`).join('');
+ return `<section class="panel"><h2>Schedule checks & team counts</h2>
+ <p>${state.games.filter(g=>g.round!=='Additional').length} championship games · ${filled} assigned consolation games · ${20-filled} open consolation slots</p>
+ <p class="${over.length?'note':'ok'}">${over.length?'WARNING: '+over.map(t=>esc(t.team)).join(', ')+' exceed the four-game consolation cap':'No eliminated team assigned more than four games.'}</p>
+ <p>${under.length} teams currently have fewer than three finalized games. This is expected while the tournament is in progress.</p>
+ <p class="note">The three-game guarantee and optimal rest are not yet certified for every possible result. Pairings are assigned as scores become available. Review before publishing.</p>
+ <button class="primary" data-action="assign">Assign available consolation games</button> <button data-action="clear-all">Clear all scores & consolation pairings</button>
+ <div class="scroll"><table><thead><tr><th>Team</th><th>Finalized</th><th>Assigned total</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div></section>`}
+// Export a self-contained vector PDF at 90 × 30 inches. No browser print scaling or libraries needed.
+function printStartingPoster(){
+ const PW=6480,PH=2160,commands=[];
+ const green=[0.02,0.43,0.23],dark=[0.08,0.15,0.12],gray=[0.39,0.44,0.41],light=[0.72,0.79,0.74],white=[1,1,1];
+ const rgb=(a,stroke=false)=>`${a.map(v=>v.toFixed(3)).join(' ')} ${stroke?'RG':'rg'}`;
+ const pdfEscape=s=>String(s).replace(/[^\x20-\x7E]/g,'-').replace(/[\\()]/g,m=>'\\'+m);
+ const text=(x,y,s,size=21,bold=false,color=dark)=>commands.push(`${rgb(color)} BT /${bold?'F2':'F1'} ${size} Tf 1 0 0 1 ${x.toFixed(1)} ${y.toFixed(1)} Tm (${pdfEscape(s)}) Tj ET`);
+ const line=(x,y,X,Y,color=green,width=2)=>commands.push(`${rgb(color,true)} ${width} w ${x.toFixed(1)} ${y.toFixed(1)} m ${X.toFixed(1)} ${Y.toFixed(1)} l S`);
+ const rect=(x,y,w,h,color=green,width=2)=>commands.push(`${rgb(color,true)} ${width} w ${x.toFixed(1)} ${y.toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)} re S`);
+ const fill=(x,y,w,h,color)=>commands.push(`${rgb(color)} ${x} ${y} ${w} ${h} re f`);
+ const initial=(s)=>!s?'Available':s.type==='team'?s.id:(s.type==='winner'?'W':'L')+num(find(s.id));
+ const schedule=(g)=>`${times[g.slot].join(' ')} / F${g.field}`;
+ const seed=(name)=>{let n=maxprepsSeeds.indexOf(name);return n>=0?`#${n+1} ${name}`:name};
+ const box=(x,y,w,h,g,top,bottom,opts={})=>{
+   const color=opts.lower?[0.23,0.47,0.33]:green;
+   rect(x,y,w,h,color,2.6);line(x,y+h/2,x+w,y+h/2,light,1.4);
+   const maxLen=Math.floor((w-26)/12.0);
+   const shorten=t=>t.length>maxLen?t.slice(0,maxLen-2)+'..':t;
+   text(x+12,y+h-34,shorten(top),opts.font||21,true);
+   text(x+12,y+16,shorten(bottom),opts.font||21,true);
+   text(x+1,y+h+11,`G${num(g)}  ${schedule(g)}`,18,true,color);
+   return {x:x+w/2,y:y+h/2,left:x,right:x+w,top:y+h,bottom:y};
+ };
+ fill(0,0,PW,PH,white);fill(0,2040,PW,120,green);
+ text(100,2084,'LADY BULLDOG INVITATIONAL',60,true,white);
+ line(100,1899,6380,1899,green,3);
+ const positions={};
+ // Upper bracket mirrors the supplied 2025 poster: left and right sides advance inward.
+ const outerYs=[1730,1535,1340,1145];
+ for(let i=0;i<8;i++){
+   const g=find('A'+(i+1)),isLeft=i<4,k=i%4;
+   const x=isLeft?720:5180,y=outerYs[k];
+   if(!g)continue;positions[g.key]=box(x,y,515,102,g,initial(g.a).startsWith('W')?initial(g.a):seed(initial(g.a)),initial(g.b).startsWith('W')?initial(g.b):seed(initial(g.b)));
+ }
+ for(let i=0;i<4;i++){
+   const g=find('Q'+(i+1)),left=i<2,k=i%2,x=left?1660:4210,y=[1632,1242][k];
+   if(!g)continue;positions[g.key]=box(x,y,515,102,g,initial(g.a),initial(g.b));
+   for(let j=0;j<2;j++){
+     const src=positions['A'+(2*i+j+1)];if(!src)continue;const edge=left?x:x+515,mid=(src.x+edge)/2;
+     line(left?src.right:src.left,src.y,mid,src.y,light,2);
+     line(mid,src.y,mid,y+51,light,2);line(mid,y+51,edge,y+51,light,2);
+   }
+ }
+ for(let i=0;i<2;i++){
+   const g=find('SF'+(i+1)),left=i===0,x=left?2660:3300,y=1440;
+   if(!g)continue;positions[g.key]=box(x,y,490,106,g,initial(g.a),initial(g.b));
+   for(let j=0;j<2;j++){
+     const src=positions['Q'+(2*i+j+1)];if(!src)continue;const edge=left?x:x+490,mid=(src.x+edge)/2;
+     line(left?src.right:src.left,mid===-1?0:src.y,mid,src.y,light,2);
+     line(mid,src.y,mid,y+53,light,2);line(mid,y+53,edge,y+53,light,2);
+   }
+ }
+ const final=find('FINAL');
+ if(!final)return alert('Poster unavailable for this reduced bracket.');positions.FINAL=box(2900,1160,585,124,final,initial(final.a),initial(final.b),{font:23});
+ for(let i=0;i<2;i++){
+   const src=positions['SF'+(i+1)];if(!src)continue;const x=i===0?2950:3430;
+   line(src.x,src.bottom,x,src.bottom,light,2.3);line(x,src.bottom,x,1284,light,2.3);
+ }
+ // Four opening play-ins are visually attached to their destination round-of-16 boxes.
+ for(let i=0;i<4;i++){
+   const g=find('P'+(i+1)),x=i<2?100:5850,y=[1698,1398,1698,1398][i];
+   if(!g)continue;positions[g.key]=box(x,y,440,94,g,seed(initial(g.a)),seed(initial(g.b)),{font:19});
+   const target=positions['A'+([1,3,5,7][i])];
+   if(!target)continue;const edge=i<2?x+440:x,tx=i<2?target.left:target.right;
+   line(edge,y+47,(edge+tx)/2,y+47,light,2);
+   line((edge+tx)/2,y+47,(edge+tx)/2,target.y,light,2);
+   line((edge+tx)/2,target.y,tx,target.y,light,2);
+ }
+ line(100,1080,6380,1080,green,4);
+ // Connected lower-game bracket: first ten games feed later games in the row below.
+ const lower=state.games.filter(g=>g.round==='Additional'&&g.a).sort((a,b)=>num(a)-num(b));
+ const lowerTop=lower.slice(0,10),lowerBottom=lower.slice(10);
+ const bottomPos={};
+ for(const [row,games,y] of [[0,lowerTop,735],[1,lowerBottom,410]]){
+   games.forEach((g,i)=>{
+     const x=95+i*630;
+     const p=box(x,y,525,105,g,initial(g.a),initial(g.b),{lower:true,font:22});
+     bottomPos[g.key]=p;
+   });
+ }
+ // Draw clear advancement connectors for lower-bracket games that feed a game in the next row.
+ // Connections within a row are indicated by the W/L source labels to avoid crossing other boxes.
+ for(const g of lowerBottom){
+   const dest=bottomPos[g.key];
+   for(const src of [g.a,g.b]){
+     if(!src||src.type==='team'||!bottomPos[src.id]||!lowerTop.some(q=>q.key===src.id))continue;
+     const origin=bottomPos[src.id];
+     const y=650,dx=dest.x;
+     line(origin.x,origin.bottom,origin.x,y,light,1.6);
+     line(origin.x,y,dx,y,light,1.6);
+     line(dx,y,dx,dest.top+12,light,1.6);
+   }
+ }
+ const stream=commands.join('\n')+'\n';
+ const enc=new TextEncoder();let chunks=[],offsets=[0],bytes=0;
+ const push=s=>{chunks.push(s);bytes+=enc.encode(s).length};
+ push('%PDF-1.4\n');
+ const obj=(id,s)=>{offsets[id]=bytes;push(`${id} 0 obj\n${s}\nendobj\n`)};
+ obj(1,'<< /Type /Catalog /Pages 2 0 R >>');
+ obj(2,'<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
+ obj(3,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PW} ${PH}] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>`);
+ obj(4,'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+ obj(5,'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>');
+ obj(6,`<< /Length ${enc.encode(stream).length} >>\nstream\n${stream}endstream`);
+ const xref=bytes;push('xref\n0 7\n0000000000 65535 f \n');
+ for(let i=1;i<=6;i++)push(String(offsets[i]).padStart(10,'0')+' 00000 n \n');
+ push(`trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`);
+ const blob=new Blob(chunks,{type:'application/pdf'}),url=URL.createObjectURL(blob),a=document.createElement('a');
+ a.href=url;a.download='Lady_Bulldog_Full_Starting_Bracket_90x30.pdf';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
+ showToast('Full 90 x 30 inch bracket PDF downloaded, including additional games.');
+}
+function showToast(message){let el=document.getElementById('toast');if(!el){el=document.createElement('div');el.id='toast';el.setAttribute('role','status');el.style.cssText='position:fixed;bottom:18px;right:18px;max-width:340px;background:#087b3b;color:white;padding:14px 18px;border-radius:10px;box-shadow:0 4px 18px #0008;z-index:10';document.body.appendChild(el)}el.textContent=message;el.hidden=false;clearTimeout(window.toastTimeout);window.toastTimeout=setTimeout(()=>el.hidden=true,3500)}
+function render(){$('teamCount').textContent=state.draw.length;const pages={bracket,schedule,scores,teams,paths,checks};$('view').innerHTML=pages[tab]();document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));if(tab==='paths')pathDetails();if(!storageOK)$('status').textContent+=' Browser storage may be blocked; changes might not persist.'}
+$('nav').addEventListener('click',e=>{const b=e.target.closest('[data-tab]');if(!b)return;tab=b.dataset.tab;render()});
+$('view').addEventListener('change',e=>{if(e.target.id==='teamChoice'){pathDetails();return}if(e.target.matches('[data-score]')){const g=find(e.target.dataset.score);g[e.target.dataset.side]=e.target.value;save()}});
+$('view').addEventListener('input',e=>{if(e.target.matches('[data-score]')){const g=find(e.target.dataset.score);g[e.target.dataset.side]=e.target.value;save()}});
+$('view').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.withdraw){withdrawTeam(b.dataset.withdraw);return}if(b.dataset.action==='print-poster'){printStartingPoster();return}if(b.dataset.action==='assign'){const n=assignConsolation();render();showToast(n+' consolation games assigned.');return}if(b.dataset.action==='clear-all'){if(!confirm('Clear ALL scores and consolation matchups?'))return;clearScoresAndConsolation();render();showToast('Scores and consolation matchups cleared.');return}if(b.dataset.finalize){const g=find(b.dataset.finalize);if(!resolve(g.a)||!resolve(g.b))return alert('Both teams must be known');if(!/^\d+$/.test(g.sa)||!/^\d+$/.test(g.sb)||+g.sa===+g.sb)return alert('Enter two valid non-tied scores');g.final=true;save();if(window.lbReportFinalized)window.lbReportFinalized(g.key,g.sa,g.sb);const added=assignConsolation();tab='scores';render();showToast('Game '+num(g)+' finalized. '+(added?added+' consolation matchup(s) assigned.':'Bracket updated.'));return}if(b.dataset.unlock){const g=find(b.dataset.unlock);const dependent=state.games.some(x=>x.final&&[x.a,x.b].some(s=>s&&s.type!=='team'&&s.id===g.key));if(dependent)return alert('Unlock later dependent games first');if(state.games.some(x=>x.round==='Additional'&&x.a))return alert('Clear all scores and consolation pairings from Checks before changing earlier results.');g.final=false;save();render();return}if(b.dataset.move!==undefined){if(state.seedSlots)return;const i=+b.dataset.move,j=i+(+b.dataset.dir);if(j<0||j>=20)return;if(state.games.some(g=>g.final)&&!confirm('This clears finalized scores. Continue?'))return;[state.draw[i],state.draw[j]]=[state.draw[j],state.draw[i]];build();render();return}if(['shuffle','reset','seeded'].includes(b.dataset.action)){if(state.seedSlots)return alert('Seed resets are disabled after a withdrawal to preserve the active roster.');if(state.games.some(g=>g.final)&&!confirm('This clears finalized scores. Continue?'))return;if(b.dataset.action==='reset')state.draw=[...roster];else if(b.dataset.action==='seeded')state.draw=[...maxprepsSeeds];else for(let i=19;i>0;i--){const j=Math.floor(Math.random()*(i+1));[state.draw[i],state.draw[j]]=[state.draw[j],state.draw[i]]}build();render()}});
+try{render()}catch(err){$('view').textContent='Startup error: '+err.message;console.error(err)}
+})();
+</script></body></html>
